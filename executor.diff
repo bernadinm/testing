@@ -1,0 +1,232 @@
+diff --git a/src/docker/executor.cpp b/src/docker/executor.cpp
+index 0d1fd65..b899d50 100644
+--- a/src/docker/executor.cpp
++++ b/src/docker/executor.cpp
+@@ -105,7 +105,7 @@ public:
+       const FrameworkInfo& _frameworkInfo,
+       const SlaveInfo& slaveInfo)
+   {
+-    cout << "Registered docker executor on " << slaveInfo.hostname() << endl;
++    LOG(WARNING) << "Registered docker executor on " << slaveInfo.hostname();
+     driver = _driver;
+     frameworkInfo = _frameworkInfo;
+   }
+@@ -114,12 +114,12 @@ public:
+       ExecutorDriver* driver,
+       const SlaveInfo& slaveInfo)
+   {
+-    cout << "Re-registered docker executor on " << slaveInfo.hostname() << endl;
++    LOG(WARNING) << "Re-registered docker executor on " << slaveInfo.hostname();
+   }
+ 
+   void disconnected(ExecutorDriver* driver)
+   {
+-    cout << "Disconnected from the agent" << endl;
++    LOG(WARNING) << "Disconnected from the agent";
+   }
+ 
+   void launchTask(ExecutorDriver* driver, const TaskInfo& task)
+@@ -143,7 +143,7 @@ public:
+       killPolicy = task.kill_policy();
+     }
+ 
+-    cout << "Starting task " << taskId.get() << endl;
++    LOG(WARNING) << "Starting task " << taskId.get();
+ 
+     CHECK(task.has_container());
+     CHECK(task.has_command());
+@@ -211,8 +211,9 @@ public:
+       }));
+ 
+     inspect.onFailed(defer(self(), [=](const string& failure) {
+-      cerr << "Failed to inspect container '" << containerName << "'"
+-           << ": " << failure << endl;
++      LOG(WARNING)
++        << "Failed to inspect container '" << containerName << "'"
++        << ": " << failure;
+ 
+       // TODO(bmahler): This is fatal, try to shut down cleanly.
+       // Since we don't have a container id, we can only discard
+@@ -225,7 +226,7 @@ public:
+ 
+   void killTask(ExecutorDriver* driver, const TaskID& taskId)
+   {
+-    cout << "Received killTask for task " << taskId.value() << endl;
++    LOG(WARNING) << "Received killTask for task " << taskId.value();
+ 
+     // Using shutdown grace period as a default is backwards compatible
+     // with the `stop_timeout` flag, deprecated in 1.0.
+@@ -233,6 +234,10 @@ public:
+ 
+     if (killPolicy.isSome() && killPolicy->has_grace_period()) {
+       gracePeriod = Nanoseconds(killPolicy->grace_period().nanoseconds());
++
++      LOG(WARNING)
++        << "Grace period for kill is "
++        << Nanoseconds(killPolicy->grace_period().nanoseconds());
+     }
+ 
+     killTask(driver, taskId, gracePeriod);
+@@ -242,7 +247,7 @@ public:
+ 
+   void shutdown(ExecutorDriver* driver)
+   {
+-    cout << "Shutting down" << endl;
++    LOG(WARNING) << "Shutting down";
+ 
+     // Currently, 'docker->run' uses the reaper internally, hence we need
+     // to account for the reap interval. We also leave a small buffer of
+@@ -263,6 +268,7 @@ public:
+     // agent is smaller than the kill grace period).
+     if (run.isSome()) {
+       CHECK_SOME(taskId);
++      LOG(WARNING) << "Killing task before shutting down";
+       killTask(driver, taskId.get(), gracePeriod);
+     } else {
+       driver->stop();
+@@ -290,8 +296,8 @@ protected:
+       return;
+     }
+ 
+-    cout << "Received task health update, healthy: "
+-         << stringify(healthy) << endl;
++    LOG(WARNING) << "Received task health update, healthy: "
++         << stringify(healthy);
+ 
+     TaskStatus status;
+     status.mutable_task_id()->CopyFrom(taskID);
+@@ -306,6 +312,7 @@ protected:
+     driver.get()->sendStatusUpdate(status);
+ 
+     if (initiateTaskKill) {
++      LOG(WARNING) << "Sending kill task to self due to health checks";
+       killedByHealthCheck = true;
+       killTask(driver.get(), taskID);
+     }
+@@ -327,6 +334,8 @@ private:
+     // Issue the kill signal if the container is running
+     // and we haven't killed it yet.
+     if (run.isSome() && !killed) {
++      LOG(WARNING) << "Adding kill continuation to docker inspect";
++
+       // We have to issue the kill after 'docker inspect' has
+       // completed, otherwise we may race with 'docker run'
+       // and docker may not know about the container. Note
+@@ -344,6 +353,7 @@ private:
+     // information while the task is being killed (consider a
+     // task that takes 30 minutes to be cleanly killed).
+     if (healthPid != -1) {
++      LOG(WARNING) << "Cleaning up health check process";
+       os::killtree(healthPid, SIGKILL);
+       healthPid = -1;
+     }
+@@ -356,6 +366,8 @@ private:
+     CHECK_SOME(taskId);
+     CHECK_EQ(taskId_, taskId.get());
+ 
++    LOG(WARNING) << "In the _killTask continuation";
++
+     if (!terminated && !killed) {
+       // Because we rely on `killed` to determine whether
+       // to send TASK_KILLED, we set `killed` only once the
+@@ -365,6 +377,7 @@ private:
+       // a race between signaling and the container
+       // terminating with a non-zero exit status.
+       killed = true;
++      LOG(WARNING) << "Set 'killed' to true";
+ 
+       // Send TASK_KILLING if the framework can handle it.
+       if (protobuf::frameworkHasCapability(
+@@ -374,8 +387,10 @@ private:
+         status.mutable_task_id()->CopyFrom(taskId.get());
+         status.set_state(TASK_KILLING);
+         driver.get()->sendStatusUpdate(status);
++        LOG(WARNING) << "Sent TASK_KILLING status update";
+       }
+ 
++      LOG(WARNING) << "Calling docker stop";
+       // TODO(bmahler): Replace this with 'docker kill' so
+       // that we can adjust the grace period in the case of
+       // a `KillPolicy` override.
+@@ -387,6 +402,8 @@ private:
+   {
+     terminated = true;
+ 
++    LOG(WARNING) << "Was reaped, so 'terminated' = true";
++
+     // In case the stop is stuck, discard it.
+     stop.discard();
+ 
+@@ -410,6 +427,8 @@ private:
+     TaskState state;
+     string message;
+ 
++    LOG(WARNING) << "In _reaped continuation";
++
+     if (!run.isReady()) {
+       // TODO(bmahler): Include the run command in the message.
+       state = TASK_FAILED;
+@@ -477,8 +496,8 @@ private:
+ 
+     HealthCheck healthCheck = task.health_check();
+     if (!healthCheck.has_command()) {
+-      cerr << "Unable to launch health process: "
+-           << "Only command health check is supported now" << endl;
++      LOG(WARNING) << "Unable to launch health process: "
++           << "Only command health check is supported now";
+       return;
+     }
+ 
+@@ -487,17 +506,17 @@ private:
+       docker->validateVersion(Version(1, 3, 0));
+ 
+     if (validateVersion.isError()) {
+-      cerr << "Unable to launch health process: "
+-           << validateVersion.error() << endl;
++      LOG(WARNING) << "Unable to launch health process: "
++           << validateVersion.error();
+       return;
+     }
+ 
+     // Wrap the original health check command in "docker exec".
+     const CommandInfo& command = healthCheck.command();
+     if (!command.has_value()) {
+-      cerr << "Unable to launch health process: "
++      LOG(WARNING) << "Unable to launch health process: "
+            << (command.shell() ? "Shell command" : "Executable path")
+-           << " is not specified" << endl;
++           << " is not specified";
+       return;
+     }
+ 
+@@ -537,8 +556,8 @@ private:
+     checkerArguments.push_back("--health_check_json=" + stringify(json));
+     checkerArguments.push_back("--task_id=" + task.task_id().value());
+ 
+-    cout << "Launching health check process: "
+-         << strings::join(" ", checkerArguments) << endl;
++    LOG(WARNING) << "Launching health check process: "
++         << strings::join(" ", checkerArguments);
+ 
+     Try<Subprocess> healthProcess =
+       process::subprocess(
+@@ -551,15 +570,15 @@ private:
+         Subprocess::FD(STDERR_FILENO));
+ 
+     if (healthProcess.isError()) {
+-      cerr << "Unable to launch health process: "
+-           << healthProcess.error() << endl;
++      LOG(WARNING) << "Unable to launch health process: "
++           << healthProcess.error();
+       return;
+     }
+ 
+     healthPid = healthProcess.get().pid();
+ 
+-    cout << "Health check process launched at pid: "
+-         << stringify(healthPid) << endl;
++    LOG(WARNING) << "Health check process launched at pid: "
++         << stringify(healthPid);
+   }
+ 
+   // TODO(alexr): Introduce a state enum and document transitions,
